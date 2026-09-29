@@ -1,4 +1,5 @@
 import { pool } from "../db/pool";
+import { redisClient } from "../redis/client";
 import {
   Product,
   ProductRow,
@@ -19,7 +20,14 @@ function mapProductRow(row: ProductRow): Product {
   };
 }
 
-export async function getAllProducts(filters: {
+const PRODUCTS_ALL_CACHE_KEY = "products:all";
+const PRODUCTS_CACHE_TTL_SECONDS = 60;
+
+function getProdcutCacheKey(productId:number):string {
+  return `products:${productId}`;
+}
+
+export async function fetchAllProductsFromDatabase(filters: {
   category?: string;
   search?: string;
 }): Promise<Product[]> {
@@ -42,7 +50,37 @@ export async function getAllProducts(filters: {
   return result.rows.map(mapProductRow);
 }
 
-export async function getProductById(id: number): Promise<Product | null> {
+export async function getAllProducts(filters: {
+  category?: string;
+  search?: string;
+}): Promise<Product[]> {
+  const hasFilters = Boolean(filters?.category || filters?.search);
+
+  if(hasFilters){
+    return fetchAllProductsFromDatabase(filters);
+    console.log("Cache bypass: filtered product list")
+  }
+
+  const cachedProducts = await redisClient.get(PRODUCTS_ALL_CACHE_KEY);
+
+  if (cachedProducts) {
+    console.log("cache hit: products:all")
+    return JSON.parse(cachedProducts) as Product[];
+  }
+
+  console.log("cache miss: products:all")
+  const products = await fetchAllProductsFromDatabase(filters);
+  await redisClient.setEx(
+    PRODUCTS_ALL_CACHE_KEY,
+    PRODUCTS_CACHE_TTL_SECONDS,
+    JSON.stringify(products)
+  );
+    console.log("cache set: products:all")
+
+    return products
+}
+
+export async function fetchSingleProductFromDatabase(id: number): Promise<Product | null> {
   const result = await pool.query<ProductRow>(
     "SELECT * FROM products WHERE id = $1",
     [id]
@@ -54,6 +92,11 @@ export async function getProductById(id: number): Promise<Product | null> {
 
   return mapProductRow(result.rows[0]);
 }
+
+export async function getProductsById(id: number): Promise<Product | null> {
+    
+}
+
 
 export async function createProduct(
   input: CreateProductInput
