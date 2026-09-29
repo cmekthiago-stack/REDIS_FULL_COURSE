@@ -23,7 +23,7 @@ function mapProductRow(row: ProductRow): Product {
 const PRODUCTS_ALL_CACHE_KEY = "products:all";
 const PRODUCTS_CACHE_TTL_SECONDS = 60;
 
-function getProdcutCacheKey(productId:number):string {
+function getProductCacheKey(productId: number): string {
   return `products:${productId}`;
 }
 
@@ -56,11 +56,10 @@ export async function getAllProducts(filters: {
 }): Promise<Product[]> {
   const hasFilters = Boolean(filters?.category || filters?.search);
 
-  if(hasFilters){
-    return fetchAllProductsFromDatabase(filters);
-    console.log("Cache bypass: filtered product list")
-  }
-
+if (hasFilters) {
+  console.log("Cache bypass: filtered product list");
+  return fetchAllProductsFromDatabase(filters);
+}
   const cachedProducts = await redisClient.get(PRODUCTS_ALL_CACHE_KEY);
 
   if (cachedProducts) {
@@ -93,11 +92,37 @@ export async function fetchSingleProductFromDatabase(id: number): Promise<Produc
   return mapProductRow(result.rows[0]);
 }
 
-export async function getProductsById(id: number): Promise<Product | null> {
-    
+export async function getProductById(id: number): Promise<Product | null> {
+const cacheKey = getProductCacheKey(id);
+  const cachedProduct = await redisClient.get(cacheKey);
+  if (cachedProduct) {
+    console.log('cache hit', cacheKey)
+    return JSON.parse(cachedProduct) as Product
+  }
+  console.log('cache miss', cacheKey)
+  const product = await fetchSingleProductFromDatabase(id)
+  if(!product){
+    return null
+  }
+
+  await redisClient.setEx(cacheKey, PRODUCTS_CACHE_TTL_SECONDS, JSON.stringify(product))
+  console.log('cache set', cacheKey)
+
+  return product;
+
 }
 
+async function deleteProductsAllCache(): Promise<void> {
+  await redisClient.del(PRODUCTS_ALL_CACHE_KEY);
+  console.log("cache delete: products:all")
+}
 
+async function deleteSingleProductCache(productId: number): Promise<void> {
+  const cacheKey = getProductCacheKey(productId)
+
+  await redisClient.del(cacheKey)
+  console.log("cache deleted", cacheKey)
+}
 export async function createProduct(
   input: CreateProductInput
 ): Promise<Product> {
@@ -108,8 +133,14 @@ export async function createProduct(
     [input.name, input.description, input.price, input.category, input.stock]
   );
 
-  return mapProductRow(result.rows[0]);
+  const newlyCreatedProduct = mapProductRow(result.rows[0])
+  await deleteProductsAllCache()
+
+  return newlyCreatedProduct
+
+
 }
+
 
 export async function updateProduct(
   id: number,
@@ -139,5 +170,11 @@ export async function updateProduct(
     [name, description, price, category, stock, id]
   );
 
-  return mapProductRow(result.rows[0]);
+  const product = mapProductRow(result.rows[0]);
+
+  await deleteProductsAllCache()
+  await deleteSingleProductCache(id)
+  return product; 
+
+
 }
